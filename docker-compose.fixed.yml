@@ -1,0 +1,115 @@
+x-runtime: &runtime
+  init: true
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  mem_limit: 128m
+  cpus: 0.5
+  pids_limit: 64
+  restart: "on-failure:5"
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  web:
+    <<: *runtime
+    image: nginx:alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
+    user: nginx
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./config/nginx-fixed.conf:/etc/nginx/nginx.conf:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1:8080/health
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - frontend
+
+  app:
+    <<: *runtime
+    image: python:3.11-alpine@sha256:09d17d5e4c16d0a7a1eea690bcb7c6ab8616b211f8421e429e97c1bef5bd0ed2
+    user: "65532:65532"
+    working_dir: /app
+    command: ["python", "-u", "app.py"]
+    environment:
+      DEBUG: "false"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./app/app.py:/app/app.py:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - frontend
+      - backend
+
+  db:
+    <<: *runtime
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    user: "70:70"
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    environment:
+      POSTGRES_USER: labadmin
+      POSTGRES_DB: vulnapp
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+      - /var/run/postgresql:rw,noexec,nosuid,size=16m,uid=70,gid=70,mode=0770
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "labadmin", "-d", "vulnapp"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  pgdata:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
